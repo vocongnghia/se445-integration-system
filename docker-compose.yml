@@ -1,0 +1,127 @@
+# ============================================================
+#  NEN TANG TICH HOP ABC RETAIL - khung du an
+#  Chay ca he thong:   docker compose up -d --build
+#  Xem trang thai  :   docker compose ps
+#  Xem log         :   docker compose logs -f integration-service
+#  Tat             :   docker compose down
+# ============================================================
+
+services:
+
+  # ---------- HA TANG ----------
+
+  kong:
+    image: kong:3.6
+    container_name: kong
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_LOG_LEVEL: notice
+    volumes:
+      - ./kong:/kong:ro
+    ports:
+      - "8000:8000"   # cong vao duy nhat tu ben ngoai
+      - "8001:8001"   # admin api, de kiem tra route
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      integration-service:
+        condition: service_started
+    networks: [si-net]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+    ports:
+      - "5672:5672"
+      - "15672:15672"  # giao dien quan tri, guest/guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [si-net]
+
+  # ---------- PHAN CUA NHOM ----------
+
+  integration-service:
+    build: ./integration-service
+    container_name: integration-service
+    environment:
+      PORT: 4000
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672
+      WMS_URL: http://mock-wms:3001
+      TMS_URL: http://mock-tms:3002
+      CRM_URL: http://mock-crm:3003
+      PAYMENT_URL: http://mock-payment:3004
+      HTTP_TIMEOUT_MS: 3000
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [si-net]
+
+  dashboard:
+    build: ./dashboard
+    container_name: dashboard
+    environment:
+      PORT: 3000
+      GATEWAY_URL: http://kong:8000
+      RABBITMQ_API: http://rabbitmq:15672/api
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASS: ${RABBITMQ_PASS:-guest}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - integration-service
+    networks: [si-net]
+
+  # ---------- HE THONG CUA KHACH HANG - KHONG SUA ----------
+
+  mock-wms:
+    build: ./mocks
+    container_name: mock-wms
+    environment: { SERVICE: wms, PORT: 3001 }
+    ports: ["3001:3001"]
+    networks: [si-net]
+
+  mock-tms:
+    build: ./mocks
+    container_name: mock-tms
+    environment: { SERVICE: tms, PORT: 3002 }
+    ports: ["3002:3002"]
+    networks: [si-net]
+
+  mock-crm:
+    build: ./mocks
+    container_name: mock-crm
+    environment: { SERVICE: crm, PORT: 3003 }
+    ports: ["3003:3003"]
+    networks: [si-net]
+
+  mock-payment:
+    build: ./mocks
+    container_name: mock-payment
+    environment:
+      SERVICE: payment
+      PORT: 3004
+      PAYMENT_ALWAYS_FAIL: "false"   # doi "true" de kiem thu luong that bai
+    ports: ["3004:3004"]
+    networks: [si-net]
+
+networks:
+  si-net:
+    name: si-net
+    driver: bridge
